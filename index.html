@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Appuntamenti Operaio di Lavoro - Gama Service</title>
+<meta name="theme-color" content="#2e3036">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Il mio giorno">
+<link rel="stylesheet" href="css/style.css?v=42">
+</head>
+<body>
+
+<!-- ==================== LOGIN ==================== -->
+<div id="loginScreen" class="login-screen">
+  <div class="login-box">
+    <div class="login-logo">GAMA <span>SERVICE</span></div>
+    <h1>Planning Operaio</h1>
+    <p class="login-sub">Il tuo lavoro di oggi, in un tocco</p>
+    <input type="email" id="loginEmail" placeholder="Email" autocomplete="username">
+    <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+    <button id="btnLogin" class="btn btn-primary btn-block">Accedi</button>
+    <div id="loginError" class="login-error"></div>
+    <p class="hint" style="margin-top:14px;">Usa le stesse credenziali di Gestione Ore.</p>
+  </div>
+</div>
+
+<!-- ==================== APP ==================== -->
+<div id="appScreen" class="app-screen" style="display:none;">
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="topbar-logo">GAMA <span>SERVICE</span></div>
+      <div class="topbar-title">Il mio giorno</div>
+    </div>
+    <div class="topbar-right">
+      <button id="btnLogout" class="btn btn-ghost">Esci</button>
+    </div>
+  </header>
+
+  <nav class="op-tabs">
+    <button class="op-tab active" data-view="settimana">📅 Appuntamenti settimanali</button>
+    <button class="op-tab" data-view="scanner">📷 Carica ticket</button>
+  </nav>
+
+  <main class="view" id="viewSettimana">
+    <div class="settimana-nav">
+      <button type="button" id="btnSettPrec" class="settimana-nav-freccia" aria-label="Settimana precedente">‹</button>
+      <button type="button" id="btnSettOggi" class="settimana-nav-oggi" style="display:none;">Torna a oggi</button>
+      <button type="button" id="btnSettSucc" class="settimana-nav-freccia" aria-label="Settimana successiva">›</button>
+    </div>
+    <div class="operaio-card" id="operaioCard"></div>
+  </main>
+
+  <main class="view" id="viewScanner" style="display:none;">
+    <div class="scanner-box">
+      <div id="scannerVuoto" class="scanner-vuoto">
+        <p>📷 Scatta una foto al ticket compilato (verrà migliorata e caricata come PDF), oppure carica direttamente un file già pronto (PDF, JPG o PNG).</p>
+        <label for="ticketCameraInput" class="btn btn-primary btn-block">📷 Scatta foto</label>
+        <input type="file" id="ticketCameraInput" accept="image/*" capture="environment" style="display:none;">
+        <label for="ticketFileInput" class="btn btn-secondary btn-block" style="margin-top:8px;">📁 Carica file (PDF/JPG/PNG)</label>
+        <input type="file" id="ticketFileInput" accept="image/*,application/pdf" style="display:none;">
+      </div>
+
+      <div id="scannerCrop" style="display:none;">
+        <p class="hint">Controlla che i 4 angoli siano esattamente sui 4 angoli del foglio (il rilevamento e' automatico ma va sempre controllato): trascina quelli che non sono a posto, poi conferma.</p>
+        <div id="cropStage" class="crop-stage">
+          <img id="cropImg" draggable="false" alt="">
+          <svg id="cropSvg" class="crop-svg"><polygon id="cropPoly" class="crop-poly"></polygon></svg>
+          <div class="crop-handle" data-i="0"></div>
+          <div class="crop-handle" data-i="1"></div>
+          <div class="crop-handle" data-i="2"></div>
+          <div class="crop-handle" data-i="3"></div>
+        </div>
+        <div class="scanner-actions">
+          <button id="btnCropConferma" class="btn btn-primary">✅ Conferma ritaglio</button>
+          <button id="btnCropAnnulla" class="btn btn-ghost">✕ Rifai foto</button>
+        </div>
+      </div>
+
+      <div id="scannerAnteprima" style="display:none;">
+        <canvas id="scannerCanvas"></canvas>
+        <div id="pdfDirettoInfo" class="pdfdiretto-info" style="display:none;"></div>
+        <div class="scanner-actions">
+          <button id="btnScannerRuota" class="btn btn-secondary">🔄 Ruota</button>
+          <button id="btnScannerMigliora" class="btn btn-secondary">✨ Migliora</button>
+          <button id="btnScannerAnnulla" class="btn btn-ghost">✕ Annulla</button>
+        </div>
+        <label for="scannerLuogo" class="scanner-label">Luogo / cantiere dell'intervento</label>
+        <input type="text" id="scannerLuogo" placeholder="Es. TELECOM Pavia, Via Roma 12...">
+        <button id="btnScannerCarica" class="btn btn-primary btn-block">💾 Carica ticket</button>
+        <div id="scannerStatus" class="hint"></div>
+      </div>
+
+      <div id="scannerElenco"></div>
+    </div>
+  </main>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- OpenCV.js: rilevamento automatico dei bordi del ticket e miglioramento
+     tipo "scanner" (adaptive threshold). Si carica in background: se non e'
+     ancora pronta quando l'operaio scatta la foto, il ritaglio parte comunque
+     con gli angoli di default (regolabili a mano) e il "Migliora" usa il
+     metodo semplice come riserva. -->
+<script>window.cvPronto = false;</script>
+<script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="if (window.cv) { cv['onRuntimeInitialized'] = function () { window.cvPronto = true; }; }"></script>
+<script src="js/firebase-config.js?v=42"></script>
+<script src="js/planning-core.js?v=42"></script>
+<script src="js/operaio.js?v=42"></script>
+<script src="js/scanner.js?v=42"></script>
+</body>
+</html>
