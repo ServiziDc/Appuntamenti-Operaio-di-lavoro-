@@ -313,14 +313,31 @@ table.pgrid { border-collapse: separate; border-spacing: 0; font-size: 12px; min
 .op-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
 .scanner-box { max-width: 480px; margin: 20px auto; padding: 0 14px 30px; }
+/* Mentre si inquadra o si ritaglia si recuperano i margini vuoti in alto e
+   in basso: servono alla fotocamera, e senza di loro la pagina non resta
+   scorribile per niente. */
+body.cam-attiva .scanner-box { margin-top: 10px; margin-bottom: 0; padding-bottom: 8px; }
+body.cam-attiva .view { padding-bottom: 0; }
 .scanner-vuoto { background: var(--card); border: 1px dashed var(--border); border-radius: 14px; padding: 26px 18px; text-align: center; }
 .scanner-vuoto p { font-size: 14px; color: var(--muted); margin-bottom: 16px; }
 #scannerAnteprima { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
-#scannerCanvas { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); display: block; margin-bottom: 12px; background: #222; }
+/* L'anteprima della pagina scansionata: niente di sovrapposto, quindi
+   bastano i limiti CSS. max-width + max-height insieme mantengono la
+   proporzione senza schiacciare l'immagine. */
+#scannerCanvas { width: auto; height: auto; max-width: 100%; max-height: 56vh; max-height: 56dvh; border-radius: 8px; border: 1px solid var(--border); display: block; margin: 0 auto 12px; background: #222; }
 .scanner-actions { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .scanner-actions .btn { flex: 1; min-width: 90px; }
 /* Fotocamera dal vivo */
-.cam-stage { position: relative; width: 100%; background: #000; border-radius: 10px; overflow: hidden; margin-bottom: 10px; }
+/* L'anteprima della fotocamera deve stare dentro lo schermo INSIEME ai
+   pulsanti Scatta/Chiudi. Prima il video era largo il 100% senza limiti di
+   altezza: su iPhone un fotogramma 4:3 diventava alto ~480 px e, sommato a
+   barra in alto, schede, scritta di stato e pulsanti, finiva oltre il bordo
+   dello schermo - i pulsanti restavano sotto e bisognava scorrere.
+   L'altezza esatta la calcola adattaFotocamera() in scanner.js, perche' solo
+   li' si conosce la proporzione vera del fotogramma e l'altezza reale della
+   finestra su Safari. Questi limiti in CSS servono per i primi istanti,
+   prima che il video dia le sue dimensioni. */
+.cam-stage { position: relative; width: 100%; margin: 0 auto 10px; background: #000; border-radius: 10px; overflow: hidden; }
 .cam-stage video { width: 100%; display: block; }
 .cam-stage canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 .cam-stato { font-size: 13px; font-weight: 700; color: var(--muted); text-align: center; margin-bottom: 10px; }
@@ -352,7 +369,13 @@ table.pgrid { border-collapse: separate; border-spacing: 0; font-size: 12px; min
 .scanner-item-nome { font-size: 13px; font-weight: 700; word-break: break-word; }
 .scanner-item-data { font-size: 11px; color: var(--muted); white-space: nowrap; }
 
-.crop-stage { position: relative; width: 100%; margin-bottom: 12px; touch-action: none; user-select: none; -webkit-user-select: none; }
+/* Stesso problema della fotocamera: una foto verticale a tutta larghezza
+   spingeva "Conferma ritaglio" fuori dallo schermo. La larghezza del
+   riquadro la calcola adattaRitaglio() in scanner.js. Le 4 maniglie sono
+   posizionate rispetto a questo riquadro, quindi il riquadro deve avere
+   esattamente la dimensione dell'immagine: per questo si stringe lui e non
+   l'immagine dentro. */
+.crop-stage { position: relative; width: 100%; margin: 0 auto 12px; touch-action: none; user-select: none; -webkit-user-select: none; }
 .crop-stage img { width: 100%; display: block; border-radius: 8px; pointer-events: none; }
 .crop-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 .crop-poly { fill: rgba(245,144,20,.18); stroke: var(--accent); stroke-width: 2; }
@@ -362,6 +385,11 @@ table.pgrid { border-collapse: separate; border-spacing: 0; font-size: 12px; min
   box-shadow: 0 2px 8px rgba(0,0,0,.45); touch-action: none; cursor: grab;
 }
 .crop-handle:active { cursor: grabbing; background: var(--accent-dark); }
+/* Altezza riservata anche quando e' vuoto: cosi' il calcolo dello spazio
+   disponibile non cambia quando compare il messaggio sui bordi. */
+#cropStatus { min-height: 16px; }
+/* Sul ritaglio l'istruzione lunga rubava tre righe allo schermo */
+body.cam-attiva #scannerCrop > .hint { font-size: 11px; margin-bottom: 8px; }
 
 .pdfdiretto-info {
   display: flex; align-items: center; gap: 8px; background: var(--bg);

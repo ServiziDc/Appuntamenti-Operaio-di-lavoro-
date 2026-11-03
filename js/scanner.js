@@ -185,6 +185,14 @@ function apriFotocamera() {
     document.getElementById('scannerCam').style.display = 'block';
     camState.quad = null;
     camState.trovatoDa = 0;
+    // Si riparte dall'alto della pagina: la fotocamera deve vedersi intera,
+    // non a meta' perche' si era rimasti scorsi piu' in basso.
+    window.scrollTo(0, 0);
+    // Appena il video dichiara le sue dimensioni si adatta l'anteprima
+    // all'altezza dello schermo (vedi adattaFotocamera).
+    video.addEventListener('loadedmetadata', adattaFotocamera);
+    aggiornaElencoVisibile();
+    adattaFotocamera();
     avviaCicloRilevamento();
   }).catch(function (err) {
     var msg = 'Non riesco ad aprire la fotocamera';
@@ -237,6 +245,113 @@ function chiudiFotocamera() {
   var video = document.getElementById('camVideo');
   try { video.srcObject = null; } catch (e) {}
   document.getElementById('scannerCam').style.display = 'none';
+  aggiornaElencoVisibile();
+}
+
+// ============================================================
+// ADATTAMENTO ALLO SCHERMO (il motivo per cui su iPhone i pulsanti
+// finivano sotto il bordo e bisognava scorrere la pagina)
+// ------------------------------------------------------------
+// Il video e la foto da ritagliare erano larghi il 100% senza nessun
+// limite di altezza. Su un telefono stretto un fotogramma 4:3 diventa
+// alto quasi 500 px e, sommato alla barra in alto, alle schede, alla
+// scritta di stato e ai pulsanti, supera l'altezza dello schermo.
+// Qui si calcola quanto spazio resta davvero sotto l'anteprima e si
+// STRINGE IL RIQUADRO (non il video dentro di esso): il video mantiene
+// cosi' la sua proporzione esatta e il riquadro verde, che e' disegnato
+// in frazioni del riquadro, resta perfettamente allineato. Se si
+// limitasse solo l'altezza del video, il riquadro verde finirebbe
+// spostato rispetto al foglio.
+// ============================================================
+
+// Altezza realmente visibile. Su Safari iPhone "100vh" vale piu' dello
+// schermo utile (non conta le barre del browser): visualViewport da'
+// invece l'altezza vera, barre comprese.
+function altezzaUtile() {
+  if (window.visualViewport && window.visualViewport.height) return window.visualViewport.height;
+  return window.innerHeight || document.documentElement.clientHeight || 640;
+}
+
+// Spazio verticale disponibile per l'anteprima dentro la sezione indicata,
+// tolto quello che le sta sotto (stato, pulsanti, margini).
+function spazioPerAnteprima(riquadro, sezione) {
+  var sopra = riquadro.getBoundingClientRect().top;
+  var sotto = 0;
+  for (var i = 0; i < sezione.children.length; i++) {
+    var figlio = sezione.children[i];
+    if (figlio === riquadro) continue;
+    // conta solo quello che viene DOPO l'anteprima
+    if (riquadro.compareDocumentPosition(figlio) & Node.DOCUMENT_POSITION_FOLLOWING) {
+      sotto += figlio.offsetHeight + 12;
+    }
+  }
+  sotto += 16;                       // un po' di respiro in fondo
+  var h = altezzaUtile() - sopra - sotto;
+  return h < 170 ? 170 : h;          // sotto questa soglia non si inquadra piu' niente
+}
+
+// Stringe il riquadro quanto basta perche' l'anteprima, alla sua
+// proporzione, stia nello spazio rimasto.
+function adattaRiquadro(riquadro, sezione, larghezzaSorgente, altezzaSorgente) {
+  if (!riquadro || !sezione || !larghezzaSorgente || !altezzaSorgente) return;
+  if (sezione.style.display === 'none') return;
+  riquadro.style.width = '';                       // riparti dalla larghezza piena
+  var wMax = riquadro.parentElement ? riquadro.parentElement.clientWidth : 0;
+  if (!wMax) return;
+  var disponibile = spazioPerAnteprima(riquadro, sezione);
+  var rapporto = larghezzaSorgente / altezzaSorgente;
+  var w = Math.min(wMax, Math.round(disponibile * rapporto));
+  riquadro.style.width = w + 'px';
+}
+
+function adattaFotocamera() {
+  var video = document.getElementById('camVideo');
+  if (!video || !video.videoWidth) return;
+  adattaRiquadro(document.getElementById('camStage'),
+                 document.getElementById('scannerCam'),
+                 video.videoWidth, video.videoHeight);
+  disegnaRiquadroVerde();
+}
+
+function adattaRitaglio() {
+  var img = document.getElementById('cropImg');
+  if (!img || !img.naturalWidth) return;
+  adattaRiquadro(document.getElementById('cropStage'),
+                 document.getElementById('scannerCrop'),
+                 img.naturalWidth, img.naturalHeight);
+  if (scanState.cropPts) renderCropOverlay();
+}
+
+// Rotazione del telefono, comparsa/scomparsa delle barre di Safari,
+// tastiera che si apre: in tutti questi casi lo spazio cambia e va
+// ricalcolato.
+function adattaTutto() {
+  // prima si libera lo spazio, poi si misura quello rimasto
+  aggiornaElencoVisibile();
+  adattaFotocamera();
+  adattaRitaglio();
+}
+
+// Mentre si inquadra o si ritaglia, l'elenco dei ticket caricati oggi (che
+// sta sotto) viene nascosto: non serve in quel momento e lasciava la pagina
+// scorribile, dando l'impressione che la schermata non fosse adattata.
+function aggiornaElencoVisibile() {
+  var el = document.getElementById('scannerElenco');
+  if (!el) return;
+  var cam = document.getElementById('scannerCam');
+  var crop = document.getElementById('scannerCrop');
+  var inUso = (cam && cam.style.display !== 'none') ||
+              (crop && crop.style.display !== 'none');
+  el.style.display = inUso ? 'none' : '';
+  document.body.classList.toggle('cam-attiva', inUso);
+}
+window.addEventListener('resize', adattaTutto);
+window.addEventListener('orientationchange', function () {
+  // su iPhone le misure subito dopo la rotazione sono ancora quelle vecchie
+  setTimeout(adattaTutto, 250);
+});
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', adattaTutto);
 }
 
 // Canvas di lavoro riutilizzato: crearne uno nuovo a ogni fotogramma
@@ -393,6 +508,10 @@ function avviaFaseRitaglio(dataUrl) {
   document.getElementById('scannerAnteprima').style.display = 'none';
   document.getElementById('scannerDomanda').style.display = 'none';
   document.getElementById('scannerCrop').style.display = 'block';
+  // Come per la fotocamera: si riparte dall'alto, cosi' la foto e i pulsanti
+  // "Conferma ritaglio" / "Rifai foto" si vedono senza scorrere.
+  window.scrollTo(0, 0);
+  aggiornaElencoVisibile();
 
   // Ogni scatto ha il suo numero: serve a non far scrivere i risultati di
   // un rilevamento partito in ritardo sopra una foto nel frattempo rifatta.
@@ -434,6 +553,9 @@ function avviaFaseRitaglio(dataUrl) {
       { x: 0.98, y: 0.98 },
       { x: 0.02, y: 0.98 }
     ];
+    // Prima di disegnare gli angoli si da' al riquadro la dimensione giusta
+    // per lo schermo: le maniglie sono posizionate rispetto a lui.
+    adattaRitaglio();
     renderCropOverlay();
 
     if (provaRilevamento()) return;
@@ -1165,6 +1287,7 @@ function renderCropOverlay() {
 
 document.getElementById('btnCropAnnulla').addEventListener('click', function () {
   document.getElementById('scannerCrop').style.display = 'none';
+  aggiornaElencoVisibile();
   document.getElementById('cropStatus').textContent = '';
   scanState.img = null;
   // Se ci sono gia' pagine confermate si torna alla loro anteprima,
@@ -1273,6 +1396,7 @@ document.getElementById('btnCropConferma').addEventListener('click', function ()
     // pagine dello stesso ticket (altrimenti l'operaio dovrebbe riscriverlo).
     if (scanState.pagine.length === 1) document.getElementById('scannerLuogo').value = '';
     document.getElementById('scannerCrop').style.display = 'none';
+    aggiornaElencoVisibile();
     document.getElementById('scannerStatus').textContent = '';
     // Chiede subito se aggiungere un'altra foto allo stesso ticket
     mostraDomandaAltraFoto();

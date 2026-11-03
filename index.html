@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Il mio giorno">
-<link rel="stylesheet" href="css/style.css?v=47">
+<link rel="stylesheet" href="css/style.css?v=48">
 </head>
 <body>
 
@@ -72,7 +72,7 @@
 
       <!-- Fotocamera dal vivo: il riquadro verde segue il foglio -->
       <div id="scannerCam" style="display:none;">
-        <div class="cam-stage">
+        <div class="cam-stage" id="camStage">
           <video id="camVideo" playsinline autoplay muted></video>
           <canvas id="camOverlay"></canvas>
         </div>
@@ -154,9 +154,9 @@
      metodo semplice come riserva. -->
 <script>window.cvPronto = false;</script>
 <script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="if (window.cv) { cv['onRuntimeInitialized'] = function () { window.cvPronto = true; }; }"></script>
-<script src="js/firebase-config.js?v=47"></script>
-<script src="js/planning-core.js?v=47"></script>
-<script src="js/operaio.js?v=47"></script>
-<script src="js/scanner.js?v=47"></script>
+<script src="js/firebase-config.js?v=48"></script>
+<script src="js/planning-core.js?v=48"></script>
+<script src="js/operaio.js?v=48"></script>
+<script src="js/scanner.js?v=48"></script>
 </body>
 </html>
