@@ -41,6 +41,7 @@ function azzeraScanner() {
       document.getElementById('viewSettimana').style.display = (v === 'settimana') ? '' : 'none';
       document.getElementById('viewScanner').style.display = (v === 'scanner') ? '' : 'none';
       if (v === 'scanner') avviaElencoMieiTicket();
+      else if (camState.stream) { chiudiFotocamera(); document.getElementById('scannerVuoto').style.display = ''; }
     });
   }
 })();
@@ -117,6 +118,246 @@ function mostraAnteprimaPdfDiretto() {
   document.getElementById('scannerLuogo').value = '';
 }
 
+// ============================================================
+// FOTOCAMERA DAL VIVO con riquadro verde che segue il foglio
+// ------------------------------------------------------------
+// Mentre l'operaio inquadra, l'app analizza qualche fotogramma al secondo
+// con la versione veloce del rilevamento e disegna sopra il video il
+// quadrilatero del foglio. Cosi' si capisce subito se il foglio e' stato
+// riconosciuto, invece di scoprirlo dopo lo scatto.
+// Lo scatto NON usa il fotogramma del video (ha meno risoluzione): dove
+// possibile si usa ImageCapture.takePhoto(), che da' la stessa foto che
+// farebbe la fotocamera del telefono.
+// ============================================================
+var camState = {
+  stream: null,
+  track: null,
+  imageCapture: null,
+  timer: null,
+  quad: null,          // ultimo quadrilatero (frazioni 0..1), smussato
+  trovatoDa: 0,        // da quanti fotogrammi di fila il foglio c'e'
+  occupato: false,
+  scattoInCorso: false
+};
+
+function camSupportata() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+function apriFotocamera() {
+  var avviso = document.getElementById('scannerVuotoStato');
+  if (!camSupportata()) {
+    avviso.textContent = 'Questo telefono non permette l\'anteprima dal vivo: usa "Scatta con la fotocamera del telefono".';
+    return;
+  }
+  avviso.textContent = 'Apertura fotocamera...';
+  // Si chiede la risoluzione piu' alta possibile: "ideal" e non "exact",
+  // cosi' se il telefono non ce la fa sceglie da solo il massimo che ha.
+  navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 3840 },
+      height: { ideal: 2160 }
+    }
+  }).then(function (stream) {
+    camState.stream = stream;
+    camState.track = stream.getVideoTracks()[0];
+    try {
+      if (window.ImageCapture && camState.track) {
+        camState.imageCapture = new ImageCapture(camState.track);
+      }
+    } catch (e) { camState.imageCapture = null; }
+
+    var video = document.getElementById('camVideo');
+    video.srcObject = stream;
+    video.play().catch(function () { /* alcuni browser lo fanno partire da soli */ });
+
+    avviso.textContent = '';
+    document.getElementById('scannerVuoto').style.display = 'none';
+    document.getElementById('scannerCrop').style.display = 'none';
+    document.getElementById('scannerAnteprima').style.display = 'none';
+    document.getElementById('scannerDomanda').style.display = 'none';
+    document.getElementById('scannerCam').style.display = 'block';
+    camState.quad = null;
+    camState.trovatoDa = 0;
+    avviaCicloRilevamento();
+  }).catch(function (err) {
+    var msg = 'Non riesco ad aprire la fotocamera';
+    if (err && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) {
+      msg = 'Permesso fotocamera negato: autorizzalo nelle impostazioni del browser, oppure usa "Scatta con la fotocamera del telefono".';
+    } else if (err && err.name === 'NotFoundError') {
+      msg = 'Nessuna fotocamera disponibile su questo dispositivo.';
+    } else if (err && err.message) {
+      msg += ' (' + err.message + ')';
+    }
+    avviso.textContent = msg;
+  });
+}
+
+function chiudiFotocamera() {
+  if (camState.timer) { clearInterval(camState.timer); camState.timer = null; }
+  if (camState.stream) {
+    camState.stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+  }
+  camState.stream = null;
+  camState.track = null;
+  camState.imageCapture = null;
+  camState.quad = null;
+  camState.occupato = false;
+  camState.scattoInCorso = false;
+  var video = document.getElementById('camVideo');
+  try { video.srcObject = null; } catch (e) {}
+  document.getElementById('scannerCam').style.display = 'none';
+}
+
+// Canvas di lavoro riutilizzato: crearne uno nuovo a ogni fotogramma
+// riempirebbe la memoria del telefono.
+var camCanvasLavoro = null;
+
+function avviaCicloRilevamento() {
+  if (camState.timer) clearInterval(camState.timer);
+  // ~6 analisi al secondo: abbastanza per sembrare "dal vivo" senza
+  // scaldare il telefono.
+  camState.timer = setInterval(function () {
+    if (camState.occupato || camState.scattoInCorso) return;
+    var video = document.getElementById('camVideo');
+    if (!video || !video.videoWidth || document.getElementById('scannerCam').style.display === 'none') return;
+    camState.occupato = true;
+    try {
+      if (!camCanvasLavoro) camCanvasLavoro = document.createElement('canvas');
+      var LATO = 420;
+      var sc = Math.min(1, LATO / Math.max(video.videoWidth, video.videoHeight));
+      camCanvasLavoro.width = Math.max(1, Math.round(video.videoWidth * sc));
+      camCanvasLavoro.height = Math.max(1, Math.round(video.videoHeight * sc));
+      var ctx = camCanvasLavoro.getContext('2d');
+      ctx.drawImage(video, 0, 0, camCanvasLavoro.width, camCanvasLavoro.height);
+      var q = rilevaAngoliAutomatico(camCanvasLavoro, { veloce: true });
+      if (q) {
+        // Smussatura: la media con il quadrilatero precedente toglie il
+        // tremolio del riquadro fotogramma per fotogramma.
+        camState.quad = camState.quad ? mediaQuad(camState.quad, q, 0.45) : q;
+        camState.trovatoDa++;
+      } else {
+        camState.trovatoDa = 0;
+        camState.quad = null;
+      }
+    } catch (e) {
+      camState.quad = null;
+      camState.trovatoDa = 0;
+    } finally {
+      camState.occupato = false;
+    }
+    disegnaRiquadroVerde();
+  }, 160);
+}
+
+function mediaQuad(a, b, peso) {
+  var out = [];
+  for (var i = 0; i < 4; i++) {
+    out.push({
+      x: a[i].x * (1 - peso) + b[i].x * peso,
+      y: a[i].y * (1 - peso) + b[i].y * peso
+    });
+  }
+  return out;
+}
+
+function disegnaRiquadroVerde() {
+  var video = document.getElementById('camVideo');
+  var cv2 = document.getElementById('camOverlay');
+  if (!video || !cv2) return;
+  var w = video.clientWidth, h = video.clientHeight;
+  if (!w || !h) return;
+  if (cv2.width !== w || cv2.height !== h) { cv2.width = w; cv2.height = h; }
+  var ctx = cv2.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+
+  var stato = document.getElementById('camStato');
+  if (!camState.quad) {
+    stato.textContent = window.cvPronto ? 'Ricerca del foglio...' : 'Preparazione del riconoscimento...';
+    stato.className = 'cam-stato';
+    return;
+  }
+  var q = camState.quad;
+  ctx.beginPath();
+  ctx.moveTo(q[0].x * w, q[0].y * h);
+  for (var i = 1; i < 4; i++) ctx.lineTo(q[i].x * w, q[i].y * h);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(34, 197, 94, 0.16)';
+  ctx.fill();
+  ctx.strokeStyle = '#22c55e';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  for (var j = 0; j < 4; j++) {
+    ctx.beginPath();
+    ctx.arc(q[j].x * w, q[j].y * h, 7, 0, Math.PI * 2);
+    ctx.fillStyle = '#22c55e';
+    ctx.fill();
+  }
+  stato.textContent = 'Foglio riconosciuto: puoi scattare';
+  stato.className = 'cam-stato cam-stato-ok';
+}
+
+// ---------------- Scatto ----------------
+function scattaDallaFotocamera() {
+  if (camState.scattoInCorso) return;
+  camState.scattoInCorso = true;
+  var stato = document.getElementById('camStato');
+  stato.className = 'cam-stato';
+  stato.textContent = 'Scatto in corso...';
+
+  function prosegui(dataUrl) {
+    chiudiFotocamera();
+    elaboraFotoOImmagine(dataUrl);
+  }
+
+  function ripiegoSulVideo() {
+    // Riserva: si prende il fotogramma del video alla sua risoluzione
+    // piena. Meno definito della foto vera, ma sempre utilizzabile.
+    try {
+      var video = document.getElementById('camVideo');
+      var c = document.createElement('canvas');
+      c.width = video.videoWidth;
+      c.height = video.videoHeight;
+      c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+      prosegui(c.toDataURL('image/jpeg', 0.95));
+    } catch (e) {
+      camState.scattoInCorso = false;
+      stato.textContent = 'Scatto non riuscito: riprova.';
+    }
+  }
+
+  if (camState.imageCapture && camState.imageCapture.takePhoto) {
+    // takePhoto da' la foto alla risoluzione del sensore, non quella
+    // (piu' bassa) del flusso video.
+    camState.imageCapture.takePhoto().then(function (blob) {
+      var r = new FileReader();
+      r.onload = function () { prosegui(r.result); };
+      r.onerror = ripiegoSulVideo;
+      r.readAsDataURL(blob);
+    }).catch(ripiegoSulVideo);
+  } else {
+    ripiegoSulVideo();
+  }
+}
+
+document.getElementById('btnApriFotocamera').addEventListener('click', apriFotocamera);
+document.getElementById('btnCamChiudi').addEventListener('click', function () {
+  chiudiFotocamera();
+  document.getElementById('scannerVuoto').style.display = '';
+});
+document.getElementById('btnCamScatta').addEventListener('click', scattaDallaFotocamera);
+
+// Se si cambia scheda o si chiude la pagina la fotocamera va spenta,
+// altrimenti resta acceso il led e si consuma batteria.
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden && camState.stream) {
+    chiudiFotocamera();
+    document.getElementById('scannerVuoto').style.display = '';
+  }
+});
+
 // ---------------- Fase 1: ritaglio a 4 angoli (correzione prospettica) ----------------
 function avviaFaseRitaglio(dataUrl) {
   var cropImg = document.getElementById('cropImg');
@@ -136,13 +377,21 @@ function avviaFaseRitaglio(dataUrl) {
     // Se l'operaio ha gia' sistemato un angolo a mano, non glielo si tocca.
     if (scanState.scattoId !== mioScatto || scanState.utenteHaSpostato) return true;
     var auto = rilevaAngoliAutomatico(cropImg);
-    if (auto) {
-      scanState.cropPts = auto;
-      renderCropOverlay();
-      if (avviso) avviso.textContent = '';
-      return true;
+    if (!auto) return false;
+    // Passaggio fine: porta i 4 angoli esattamente sul filo del foglio.
+    var fine = raffinaAngoli(cropImg, auto);
+    if (fine) {
+      // Gia' sul bordo: non si allarga, altrimenti si riprende sfondo.
+      auto = fine;
+    } else {
+      // Senza raffinamento gli angoli sono approssimativi: meglio un filo
+      // di sfondo in piu' che tagliare via un pezzo di ticket.
+      auto = allargaLeggermente(auto, 0.008);
     }
-    return false;
+    scanState.cropPts = auto;
+    renderCropOverlay();
+    if (avviso) avviso.textContent = '';
+    return true;
   }
 
   function inizializzaAngoli() {
@@ -222,7 +471,7 @@ function medianaLuminosita(mat) {
 }
 
 // Punteggio di un quadrilatero: piu' alto = piu' probabile che sia il foglio.
-function punteggioQuadrilatero(pts, w, h) {
+function punteggioQuadrilatero(pts, w, h, contenuto) {
   var dist = function (a, b) { return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)); };
 
   // 1) Area occupata rispetto all'inquadratura: un foglio inquadrato
@@ -272,11 +521,16 @@ function punteggioQuadrilatero(pts, w, h) {
   var pLati = (Math.min(sopra, sotto) / Math.max(sopra, sotto) +
                Math.min(sin, des) / Math.max(sin, des)) / 2;
 
-  return (0.45 * pArea + 0.35 * pAngoli + 0.20 * pLati) * pBordo;
+  // Quarto criterio: il contenuto stampato. Senza questo, su un foglio
+  // appoggiato a un tagliere chiaro vinceva il tagliere, che come forma e'
+  // un quadrilatero migliore del foglio. 0.08 = 8% di righe/testo basta
+  // per prendere il massimo del punteggio.
+  var pContenuto = Math.min(1, (contenuto || 0) / 0.08);
+  return (0.38 * pArea + 0.27 * pAngoli + 0.15 * pLati + 0.20 * pContenuto) * pBordo;
 }
 
 // Estrae tutti i quadrilateri plausibili da una mappa di bordi binaria.
-function candidatiDaMappaBordi(bordi, w, h, fuori) {
+function candidatiDaMappaBordi(bordi, w, h, fuori, cont) {
   var contours = new cv.MatVector(), hierarchy = new cv.Mat();
   try {
     cv.findContours(bordi, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
@@ -292,7 +546,7 @@ function candidatiDaMappaBordi(bordi, w, h, fuori) {
             var d = approx.data32S, pts = [];
             for (var p = 0; p < 4; p++) pts.push({ x: d[p * 2], y: d[p * 2 + 1] });
             pts = ordinaAngoliQuadrilatero(pts);
-            var punteggio = punteggioQuadrilatero(pts, w, h);
+            var punteggio = punteggioQuadrilatero(pts, w, h, densitaContenuto(pts, cont));
             if (punteggio > 0) fuori.push({ punteggio: punteggio, pts: pts });
           }
           approx.delete();
@@ -307,7 +561,7 @@ function candidatiDaMappaBordi(bordi, w, h, fuori) {
             { x: v[0].x, y: v[0].y }, { x: v[1].x, y: v[1].y },
             { x: v[2].x, y: v[2].y }, { x: v[3].x, y: v[3].y }
           ]);
-          var pr = punteggioQuadrilatero(ptsR, w, h);
+          var pr = punteggioQuadrilatero(ptsR, w, h, densitaContenuto(ptsR, cont));
           // leggera penalita': e' un'approssimazione, non il bordo vero
           if (pr > 0) fuori.push({ punteggio: pr * 0.85, pts: ptsR });
         }
@@ -318,17 +572,71 @@ function candidatiDaMappaBordi(bordi, w, h, fuori) {
   finally { contours.delete(); hierarchy.delete(); }
 }
 
-// Mappa "carta": invece di cercare i bordi, separa il foglio dallo sfondo
-// per COLORE. La carta e' poco satura e chiara; un tavolo di legno, un
-// cartoncino o una scrivania sono piu' saturi e/o piu' scuri. Su un foglio
-// beige appoggiato su legno chiaro - dove il contrasto di luminosita' e'
-// quasi nullo e le venature del legno sembrano bordi - questa e' l'unica
-// strategia che trova il foglio.
-// Restituisce la maschera binaria di partenza (bianco = probabile carta),
-// da cui poi si ricavano le maschere con aperture diverse.
-function punteggioCarta(piccola) {
-  var rgb = null, hsv = null, lab = null, invS = null, sc = null, base = null;
+// Mappa dei "bordi forti": dove ci sono righe stampate, tabelle, scrittura.
+// Serve a capire QUALE dei candidati e' davvero il foglio compilato: il
+// ticket dentro ha righe e testo, un tagliere o un piano di lavoro no.
+function mappaContenuto(piccola) {
+  var gray = null, gx = null, gy = null, mag = null, forti = null;
+  try {
+    gray = new cv.Mat();
+    cv.cvtColor(piccola, gray, cv.COLOR_RGBA2GRAY);
+    gx = new cv.Mat(); gy = new cv.Mat();
+    cv.Sobel(gray, gx, cv.CV_32F, 1, 0, 3);
+    cv.Sobel(gray, gy, cv.CV_32F, 0, 1, 3);
+    mag = new cv.Mat();
+    cv.magnitude(gx, gy, mag);
+    forti = new cv.Mat();
+    cv.threshold(mag, forti, 120, 255, cv.THRESH_BINARY);
+    forti.convertTo(forti, cv.CV_8U);
+    return { dati: new Uint8Array(forti.data), w: forti.cols, h: forti.rows };
+  } catch (e) {
+    return null;
+  } finally {
+    if (gray) gray.delete();
+    if (gx) gx.delete();
+    if (gy) gy.delete();
+    if (mag) mag.delete();
+    if (forti) forti.delete();
+  }
+}
+
+// Quanta parte dell'interno del quadrilatero e' coperta da righe/testo.
+// I punti si ricavano interpolando i 4 angoli (il quadrilatero e' convesso),
+// cosi' non serve nessun test "punto dentro poligono".
+function densitaContenuto(pts, cont) {
+  if (!cont) return 0;
+  var dentro = 0, tot = 0, PASSI = 22;
+  for (var iu = 0; iu <= PASSI; iu++) {
+    var u = 0.08 + (0.84 * iu) / PASSI;
+    for (var iv = 0; iv <= PASSI; iv++) {
+      var v = 0.08 + (0.84 * iv) / PASSI;
+      var x = (1 - u) * (1 - v) * pts[0].x + u * (1 - v) * pts[1].x +
+              u * v * pts[2].x + (1 - u) * v * pts[3].x;
+      var y = (1 - u) * (1 - v) * pts[0].y + u * (1 - v) * pts[1].y +
+              u * v * pts[2].y + (1 - u) * v * pts[3].y;
+      var xi = Math.round(x), yi = Math.round(y);
+      if (xi < 0 || yi < 0 || xi >= cont.w || yi >= cont.h) continue;
+      tot++;
+      if (cont.dati[yi * cont.w + xi]) dentro++;
+    }
+  }
+  return tot ? dentro / tot : 0;
+}
+
+// Maschere di segmentazione del foglio, su tre canali diversi, perche'
+// nessuno funziona in tutte le situazioni:
+//   carta -> poco saturo + chiaro: foglio beige su legno scuro o medio
+//   luce  -> sola luminosita': foglio chiaro su sfondo scuro
+//   luce2 -> seconda soglia dentro la sola zona chiara: e' il caso del
+//            foglio bianco appoggiato su un SUPPORTO CHIARO (tagliere,
+//            piano di lavoro, un altro foglio sotto), dove il primo
+//            livello mette insieme foglio e supporto e non separa niente.
+// Una base che lascia bianco piu' del 90% dell'immagine non sta separando
+// nulla e viene saltata.
+function basiSegmentazione(piccola) {
+  var rgb = null, hsv = null, lab = null, invS = null, sc = null, L = null;
   var canaliHsv = new cv.MatVector(), canaliLab = new cv.MatVector();
+  var basi = [];
   try {
     rgb = new cv.Mat();
     cv.cvtColor(piccola, rgb, cv.COLOR_RGBA2RGB);
@@ -339,28 +647,66 @@ function punteggioCarta(piccola) {
     cv.split(hsv, canaliHsv);
     cv.split(lab, canaliLab);
 
-    // poco saturo (255 - S) + chiaro (L), mezzo e mezzo
     invS = new cv.Mat();
     cv.bitwise_not(canaliHsv.get(1), invS);
     sc = new cv.Mat();
     cv.addWeighted(invS, 0.5, canaliLab.get(0), 0.5, 0, sc);
     cv.GaussianBlur(sc, sc, new cv.Size(0, 0), 3);
+    L = new cv.Mat();
+    cv.GaussianBlur(canaliLab.get(0), L, new cv.Size(0, 0), 3);
 
-    // Otsu trova da solo la separazione fra carta e sfondo
-    base = new cv.Mat();
-    cv.threshold(sc, base, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-    return base;
+    var tot = piccola.rows * piccola.cols;
+    function aggiungi(sorgente, soglia) {
+      var b = new cv.Mat();
+      if (soglia === null) {
+        cv.threshold(sorgente, b, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+      } else {
+        cv.threshold(sorgente, b, soglia, 255, cv.THRESH_BINARY);
+      }
+      if (cv.countNonZero(b) / tot > 0.90) { b.delete(); return null; }
+      basi.push(b);
+      return b;
+    }
+
+    aggiungi(sc, null);
+    var bLuce = aggiungi(L, null);
+
+    // Secondo livello: Otsu calcolato SOLO sui pixel chiari. Si ottiene
+    // azzerando gli scuri e togliendoli dal conteggio con una maschera.
+    if (bLuce) {
+      var soloChiari = null, sogliaMat = null;
+      try {
+        soloChiari = new cv.Mat();
+        L.copyTo(soloChiari, bLuce);                 // scuri = 0
+        // Otsu su un vettore dei soli pixel chiari
+        var d = soloChiari.data, chiari = [];
+        for (var i = 0; i < d.length; i++) if (d[i] > 0) chiari.push(d[i]);
+        if (chiari.length > 500) {
+          sogliaMat = cv.matFromArray(chiari.length, 1, cv.CV_8U, chiari);
+          var fuori = new cv.Mat();
+          var t2 = cv.threshold(sogliaMat, fuori, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+          fuori.delete();
+          aggiungi(L, t2);
+        }
+      } catch (e) { /* niente secondo livello */ }
+      finally {
+        if (soloChiari) soloChiari.delete();
+        if (sogliaMat) sogliaMat.delete();
+      }
+    }
+    return basi;
   } catch (e) {
-    if (base) { base.delete(); }
-    return null;
+    for (var k = 0; k < basi.length; k++) basi[k].delete();
+    return [];
   } finally {
     if (rgb) rgb.delete();
     if (hsv) hsv.delete();
     if (lab) lab.delete();
     if (invS) invS.delete();
     if (sc) sc.delete();
-    for (var i = 0; i < canaliHsv.size(); i++) canaliHsv.get(i).delete();
-    for (var j = 0; j < canaliLab.size(); j++) canaliLab.get(j).delete();
+    if (L) L.delete();
+    for (var a = 0; a < canaliHsv.size(); a++) canaliHsv.get(a).delete();
+    for (var c = 0; c < canaliLab.size(); c++) canaliLab.get(c).delete();
     canaliHsv.delete();
     canaliLab.delete();
   }
@@ -378,9 +724,230 @@ function mascheraCarta(base, apertura, out) {
   } finally { k.delete(); }
 }
 
-function rilevaAngoliAutomatico(img) {
+// ============================================================
+// RAFFINAMENTO DEI 4 BORDI (precisione "sul filo del foglio")
+// ------------------------------------------------------------
+// Il rilevamento grezzo lavora su un'immagine ridotta a 900 px e usa
+// contorni approssimati: va bene per capire DOVE sta il foglio, ma gli
+// angoli finiscono qualche pixel fuori posto, e su una foto storta lo si
+// nota subito. Qui si fa il passaggio fine:
+//   1. per ognuno dei 4 lati si prendono ~48 punti lungo il lato;
+//   2. in ogni punto si guarda in perpendicolare e si cerca dove casca
+//      davvero il salto carta -> sfondo;
+//   3. su quei punti si fitta una retta, scartando quelli sballati
+//      (una venatura del legno, un'ombra, un angolo piegato);
+//   4. si intersecano le rette adiacenti: quelli sono i 4 angoli.
+// Funziona anche con la foto storta perche' la prospettiva mantiene DRITTI
+// i bordi di un foglio: una retta resta una retta. Per questo si fitta una
+// retta per lato invece di fidarsi dei vertici del contorno.
+// ============================================================
+
+// Canale "carta" (poco saturo + chiaro) come array di byte, piu' la
+// dimensione: campionarlo da JavaScript e' molto piu' veloce che leggere
+// pixel per pixel da una Mat di OpenCV.
+function canaleCarta(piccola) {
+  var rgb = null, hsv = null, lab = null, invS = null, sc = null;
+  var canaliHsv = new cv.MatVector(), canaliLab = new cv.MatVector();
+  try {
+    rgb = new cv.Mat();
+    cv.cvtColor(piccola, rgb, cv.COLOR_RGBA2RGB);
+    hsv = new cv.Mat();
+    cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+    lab = new cv.Mat();
+    cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
+    cv.split(hsv, canaliHsv);
+    cv.split(lab, canaliLab);
+    invS = new cv.Mat();
+    cv.bitwise_not(canaliHsv.get(1), invS);
+    sc = new cv.Mat();
+    cv.addWeighted(invS, 0.5, canaliLab.get(0), 0.5, 0, sc);
+    cv.GaussianBlur(sc, sc, new cv.Size(0, 0), 2);
+    return { dati: new Uint8Array(sc.data), w: sc.cols, h: sc.rows };
+  } catch (e) {
+    return null;
+  } finally {
+    if (rgb) rgb.delete();
+    if (hsv) hsv.delete();
+    if (lab) lab.delete();
+    if (invS) invS.delete();
+    if (sc) sc.delete();
+    for (var i = 0; i < canaliHsv.size(); i++) canaliHsv.get(i).delete();
+    for (var j = 0; j < canaliLab.size(); j++) canaliLab.get(j).delete();
+    canaliHsv.delete();
+    canaliLab.delete();
+  }
+}
+
+// Valore interpolato (bilineare) del canale carta in un punto non intero.
+function campionaCarta(c, x, y) {
+  if (x < 0 || y < 0 || x > c.w - 2 || y > c.h - 2) return -1;
+  var x0 = Math.floor(x), y0 = Math.floor(y);
+  var fx = x - x0, fy = y - y0;
+  var i = y0 * c.w + x0;
+  return c.dati[i] * (1 - fx) * (1 - fy) + c.dati[i + 1] * fx * (1 - fy) +
+         c.dati[i + c.w] * (1 - fx) * fy + c.dati[i + c.w + 1] * fx * fy;
+}
+
+// Retta ai minimi quadrati totali su un insieme di punti, con due giri di
+// rigetto degli outlier. Restituisce { nx, ny, c } con nx*x + ny*y = c.
+function rettaDaPunti(punti) {
+  var p = punti;
+  for (var giro = 0; giro < 3; giro++) {
+    var n = p.length;
+    if (n < 6) break;
+    var mx = 0, my = 0, i;
+    for (i = 0; i < n; i++) { mx += p[i].x; my += p[i].y; }
+    mx /= n; my /= n;
+    var sxx = 0, syy = 0, sxy = 0, dx, dy;
+    for (i = 0; i < n; i++) {
+      dx = p[i].x - mx; dy = p[i].y - my;
+      sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+    }
+    // direzione principale: forma chiusa dell'autovettore della 2x2
+    var ang = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    var ux = Math.cos(ang), uy = Math.sin(ang);
+    var nx = -uy, ny = ux;
+    var res = [];
+    for (i = 0; i < n; i++) res.push(Math.abs((p[i].x - mx) * nx + (p[i].y - my) * ny));
+    var ord = res.slice().sort(function (a, b) { return a - b; });
+    var mad = ord[Math.floor(ord.length / 2)] + 1e-6;
+    var soglia = Math.max(2.5 * mad, 1.0);
+    var tenuti = [];
+    for (i = 0; i < n; i++) if (res[i] <= soglia) tenuti.push(p[i]);
+    if (tenuti.length < 6 || tenuti.length === n) {
+      return { nx: nx, ny: ny, c: nx * mx + ny * my, usati: n };
+    }
+    p = tenuti;
+  }
+  var n2 = p.length, mx2 = 0, my2 = 0, k;
+  for (k = 0; k < n2; k++) { mx2 += p[k].x; my2 += p[k].y; }
+  mx2 /= n2; my2 /= n2;
+  var axx = 0, ayy = 0, axy = 0;
+  for (k = 0; k < n2; k++) {
+    var ex = p[k].x - mx2, ey = p[k].y - my2;
+    axx += ex * ex; ayy += ey * ey; axy += ex * ey;
+  }
+  var a2 = 0.5 * Math.atan2(2 * axy, axx - ayy);
+  var vx = Math.cos(a2), vy = Math.sin(a2);
+  return { nx: -vy, ny: vx, c: -vy * mx2 + vx * my2, usati: n2 };
+}
+
+function intersecaRette(r1, r2) {
+  var det = r1.nx * r2.ny - r1.ny * r2.nx;
+  if (Math.abs(det) < 1e-9) return null;
+  return {
+    x: (r1.c * r2.ny - r1.ny * r2.c) / det,
+    y: (r1.nx * r2.c - r1.c * r2.nx) / det
+  };
+}
+
+// Prende il quadrilatero grezzo (frazioni 0..1) e lo riporta esattamente
+// sul filo del foglio. Ritorna frazioni 0..1 oppure null se non ce la fa
+// (in quel caso resta valido il risultato grezzo).
+function raffinaAngoli(img, ptsFrazioni) {
   if (!window.cvPronto || typeof cv === 'undefined') return null;
-  var src = null, piccola = null, gray = null, blur = null, carta = null;
+  var src = null, piccola = null;
+  try {
+    src = cv.imread(img);
+    if (!src.cols || !src.rows) return null;
+    // Risoluzione piu' alta del rilevamento grezzo (900): qui serve
+    // precisione, ma senza arrivare alla foto intera per non far faticare
+    // troppo il telefono.
+    var LATO = 1800;
+    var scala = Math.min(1, LATO / Math.max(src.cols, src.rows));
+    piccola = new cv.Mat();
+    cv.resize(src, piccola, new cv.Size(Math.max(1, Math.round(src.cols * scala)),
+                                        Math.max(1, Math.round(src.rows * scala))), 0, 0, cv.INTER_AREA);
+    var c = canaleCarta(piccola);
+    if (!c) return null;
+    var w = c.w, h = c.h;
+
+    var q = ptsFrazioni.map(function (p) { return { x: p.x * w, y: p.y * h }; });
+    var raggio = Math.max(6, 0.03 * Math.min(w, h));
+    var rette = [];
+
+    for (var i = 0; i < 4; i++) {
+      var A = q[i], B = q[(i + 1) % 4];
+      var dx = B.x - A.x, dy = B.y - A.y;
+      var lung = Math.sqrt(dx * dx + dy * dy);
+      if (lung < 10) return null;
+      var ux = dx / lung, uy = dy / lung;
+      var nx = uy, ny = -ux;                 // una delle due perpendicolari
+
+      // Da che parte sta lo sfondo? Quella con punteggio "carta" piu' basso.
+      // Cosi' non serve sapere in che verso gira il quadrilatero.
+      var dentro = 0, fuori = 0, quanti = 0, t, Px, Py, va, vb;
+      for (t = 0.15; t <= 0.85; t += 0.0636) {
+        Px = A.x + dx * t; Py = A.y + dy * t;
+        va = campionaCarta(c, Px - nx * raggio, Py - ny * raggio);
+        vb = campionaCarta(c, Px + nx * raggio, Py + ny * raggio);
+        if (va >= 0 && vb >= 0) { dentro += va; fuori += vb; quanti++; }
+      }
+      if (!quanti) return null;
+      var sx = nx, sy = ny;                  // verso lo sfondo
+      if (fuori >= dentro) { sx = -nx; sy = -ny; }
+
+      // Lungo ogni perpendicolare si cerca la CADUTA piu' netta del
+      // punteggio carta: quello e' il filo del foglio.
+      var punti = [];
+      var passi = Math.round(raggio * 2 / 0.5);
+      for (t = 0.08; t <= 0.92; t += 0.0179) {
+        Px = A.x + dx * t; Py = A.y + dy * t;
+        var prec = -1, miglior = 0, offMigliore = null, s;
+        for (var k = 0; k <= passi; k++) {
+          s = -raggio + k * 0.5;
+          var v = campionaCarta(c, Px + sx * s, Py + sy * s);
+          if (v < 0) { prec = -1; continue; }
+          if (prec >= 0) {
+            var caduta = prec - v;           // positiva = si scurisce andando fuori
+            if (caduta > miglior) { miglior = caduta; offMigliore = s - 0.25; }
+          }
+          prec = v;
+        }
+        // Salto troppo debole: in quel punto il bordo non si vede, si scarta
+        // invece di inventarselo.
+        if (offMigliore !== null && miglior >= 1.5) {
+          punti.push({ x: Px + sx * offMigliore, y: Py + sy * offMigliore });
+        }
+      }
+      if (punti.length < 8) return null;
+      rette.push(rettaDaPunti(punti));
+    }
+
+    // Angolo i = incrocio fra il lato precedente e il lato che parte da li'.
+    var nuovi = [];
+    for (var j = 0; j < 4; j++) {
+      var p = intersecaRette(rette[(j + 3) % 4], rette[j]);
+      if (!p) return null;
+      nuovi.push(p);
+    }
+    // Controllo di sicurezza: se le rette sono quasi parallele l'incrocio
+    // puo' finire lontanissimo. In quel caso meglio tenersi il grezzo.
+    for (var m = 0; m < 4; m++) {
+      if (nuovi[m].x < -w * 0.1 || nuovi[m].x > w * 1.1 ||
+          nuovi[m].y < -h * 0.1 || nuovi[m].y > h * 1.1) return null;
+    }
+    return nuovi.map(function (p) {
+      return {
+        x: Math.min(1, Math.max(0, p.x / w)),
+        y: Math.min(1, Math.max(0, p.y / h))
+      };
+    });
+  } catch (e) {
+    return null;
+  } finally {
+    if (src) src.delete();
+    if (piccola) piccola.delete();
+  }
+}
+
+// opzioni.veloce = true -> versione leggera per l'anteprima dal vivo:
+// immagine piu' piccola e meno strategie, deve stare in pochi millisecondi
+// per non far scattare a vuoto l'anteprima.
+function rilevaAngoliAutomatico(img, opzioni) {
+  if (!window.cvPronto || typeof cv === 'undefined') return null;
+  var veloce = !!(opzioni && opzioni.veloce);
+  var src = null, piccola = null, gray = null, blur = null, cont = null, basi = [];
   try {
     src = cv.imread(img);
     if (!src.cols || !src.rows) return null;
@@ -388,7 +955,7 @@ function rilevaAngoliAutomatico(img) {
     // Si lavora su una copia ridotta: molto piu' veloce sul telefono e
     // meno sensibile al rumore della fotocamera. I punti finali sono
     // frazioni 0..1, quindi tornano validi sulla foto a piena risoluzione.
-    var LATO = 900;
+    var LATO = veloce ? 380 : 900;
     var scala = Math.min(1, LATO / Math.max(src.cols, src.rows));
     piccola = new cv.Mat();
     cv.resize(src, piccola, new cv.Size(Math.max(1, Math.round(src.cols * scala)),
@@ -426,6 +993,10 @@ function rilevaAngoliAutomatico(img) {
       }
     ];
 
+    cont = mappaContenuto(piccola);
+
+    if (veloce) strategieBordi = [strategieBordi[0]];
+
     for (var s = 0; s < strategieBordi.length; s++) {
       var bordi = new cv.Mat();
       try {
@@ -434,22 +1005,25 @@ function rilevaAngoliAutomatico(img) {
         // si spezza e non viene piu' riconosciuto come quadrilatero.
         cv.morphologyEx(bordi, bordi, cv.MORPH_CLOSE, kChiudi);
         cv.dilate(bordi, bordi, kChiudi);
-        candidatiDaMappaBordi(bordi, w, h, candidati);
+        candidatiDaMappaBordi(bordi, w, h, candidati, cont);
       } catch (e) { /* strategia saltata */ }
       finally { bordi.delete(); }
     }
     kChiudi.delete();
 
-    // B) segmentazione per colore. Qui NON si chiude ne' si dilata: servirebbe
-    // solo a riattaccare il foglio a quello che gli sta intorno.
-    carta = punteggioCarta(piccola);
-    if (carta) {
-      var aperture = [9, 15, 21];
+    // B) segmentazione del foglio su tre canali diversi, ognuno con tre
+    // aperture. Qui NON si chiude ne' si dilata: servirebbe solo a
+    // riattaccare il foglio a quello che gli sta intorno.
+    basi = basiSegmentazione(piccola);
+    // Le aperture vanno scalate con la dimensione dell'immagine, altrimenti
+    // su un fotogramma piccolo mangiano via il foglio intero.
+    var aperture = veloce ? [5, 9] : [9, 15, 21];
+    for (var b = 0; b < basi.length; b++) {
       for (var a = 0; a < aperture.length; a++) {
         var mc = new cv.Mat();
         try {
-          mascheraCarta(carta, aperture[a], mc);
-          candidatiDaMappaBordi(mc, w, h, candidati);
+          mascheraCarta(basi[b], aperture[a], mc);
+          candidatiDaMappaBordi(mc, w, h, candidati, cont);
         } catch (e) { /* strategia saltata */ }
         finally { mc.delete(); }
       }
@@ -462,8 +1036,9 @@ function rilevaAngoliAutomatico(img) {
     // gli angoli di default che l'operaio aggiusta a mano.
     if (migliore.punteggio < 0.45) return null;
 
-    var frazioni = migliore.pts.map(function (p) { return { x: p.x / w, y: p.y / h }; });
-    return allargaLeggermente(frazioni, 0.008);
+    // Niente allargamento qui: ci pensa chi chiama, a seconda che il
+    // raffinamento fine sia riuscito o no.
+    return migliore.pts.map(function (p) { return { x: p.x / w, y: p.y / h }; });
   } catch (e) {
     return null;
   } finally {
@@ -471,7 +1046,7 @@ function rilevaAngoliAutomatico(img) {
     if (piccola) piccola.delete();
     if (gray) gray.delete();
     if (blur) blur.delete();
-    if (carta) carta.delete();
+    for (var z = 0; z < basi.length; z++) basi[z].delete();
   }
 }
 

@@ -319,6 +319,14 @@ table.pgrid { border-collapse: separate; border-spacing: 0; font-size: 12px; min
 #scannerCanvas { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); display: block; margin-bottom: 12px; background: #222; }
 .scanner-actions { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .scanner-actions .btn { flex: 1; min-width: 90px; }
+/* Fotocamera dal vivo */
+.cam-stage { position: relative; width: 100%; background: #000; border-radius: 10px; overflow: hidden; margin-bottom: 10px; }
+.cam-stage video { width: 100%; display: block; }
+.cam-stage canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+.cam-stato { font-size: 13px; font-weight: 700; color: var(--muted); text-align: center; margin-bottom: 10px; }
+.cam-stato-ok { color: #15803d; }
+#btnCamScatta { flex: 2; }
+
 /* Barra dei modi di scansione (Originale / Magico / Grigio / B/N) */
 .scanner-modi { display: flex; gap: 6px; margin-bottom: 12px; }
 .scanner-modo {

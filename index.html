@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Il mio giorno">
-<link rel="stylesheet" href="css/style.css?v=45">
+<link rel="stylesheet" href="css/style.css?v=46">
 </head>
 <body>
 
@@ -58,11 +58,26 @@
   <main class="view" id="viewScanner" style="display:none;">
     <div class="scanner-box">
       <div id="scannerVuoto" class="scanner-vuoto">
-        <p>📷 Scatta una foto al ticket compilato (verrà migliorata e caricata come PDF). Dopo ogni foto ti viene chiesto se aggiungerne un'altra, così un ticket di più fogli diventa un unico PDF. Oppure carica direttamente un file già pronto (PDF, JPG o PNG).</p>
-        <label for="ticketCameraInput" class="btn btn-primary btn-block">📷 Scatta foto</label>
+        <p>📷 Inquadra il ticket compilato: l'app riconosce il foglio da sola e ci disegna sopra un riquadro verde. Dopo ogni foto ti viene chiesto se aggiungerne un'altra, così un ticket di più fogli diventa un unico PDF.</p>
+        <button type="button" id="btnApriFotocamera" class="btn btn-primary btn-block">📷 Fotocamera</button>
+        <label for="ticketCameraInput" class="btn btn-secondary btn-block" style="margin-top:8px;">🖼️ Scatta con la fotocamera del telefono</label>
         <input type="file" id="ticketCameraInput" accept="image/*" capture="environment" style="display:none;">
         <label for="ticketFileInput" class="btn btn-secondary btn-block" style="margin-top:8px;">📁 Carica file (PDF/JPG/PNG)</label>
         <input type="file" id="ticketFileInput" accept="image/*,application/pdf" style="display:none;">
+        <div id="scannerVuotoStato" class="hint" style="margin-top:10px;"></div>
+      </div>
+
+      <!-- Fotocamera dal vivo: il riquadro verde segue il foglio -->
+      <div id="scannerCam" style="display:none;">
+        <div class="cam-stage">
+          <video id="camVideo" playsinline autoplay muted></video>
+          <canvas id="camOverlay"></canvas>
+        </div>
+        <div id="camStato" class="cam-stato">Ricerca del foglio...</div>
+        <div class="scanner-actions">
+          <button type="button" id="btnCamScatta" class="btn btn-primary">⬤ Scatta</button>
+          <button type="button" id="btnCamChiudi" class="btn btn-ghost">✕ Chiudi</button>
+        </div>
       </div>
 
       <div id="scannerCrop" style="display:none;">
@@ -136,9 +151,9 @@
      metodo semplice come riserva. -->
 <script>window.cvPronto = false;</script>
 <script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="if (window.cv) { cv['onRuntimeInitialized'] = function () { window.cvPronto = true; }; }"></script>
-<script src="js/firebase-config.js?v=45"></script>
-<script src="js/planning-core.js?v=45"></script>
-<script src="js/operaio.js?v=45"></script>
-<script src="js/scanner.js?v=45"></script>
+<script src="js/firebase-config.js?v=46"></script>
+<script src="js/planning-core.js?v=46"></script>
+<script src="js/operaio.js?v=46"></script>
+<script src="js/scanner.js?v=46"></script>
 </body>
 </html>
