@@ -1,16 +1,16 @@
 // Service Worker - Appuntamenti Operaio di Lavoro (app dedicata operai)
 // Strategia network-first: prende sempre la versione online,
 // usa la cache solo se sei offline.
-var CACHE = 'appuntamenti-operaio-v20';
+var CACHE = 'appuntamenti-operaio-v21';
 var BASE = '/Appuntamenti-Operaio-di-lavoro-/';
 var CORE = [
   BASE,
   BASE + 'index.html',
-  BASE + 'css/style.css?v=44',
-  BASE + 'js/firebase-config.js?v=44',
-  BASE + 'js/planning-core.js?v=44',
-  BASE + 'js/operaio.js?v=44',
-  BASE + 'js/scanner.js?v=44',
+  BASE + 'css/style.css?v=45',
+  BASE + 'js/firebase-config.js?v=45',
+  BASE + 'js/planning-core.js?v=45',
+  BASE + 'js/operaio.js?v=45',
+  BASE + 'js/scanner.js?v=45',
   BASE + 'icon-192.png',
   BASE + 'icon-512.png',
   BASE + 'favicon.png',

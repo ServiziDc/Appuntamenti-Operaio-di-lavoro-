@@ -125,6 +125,26 @@ function avviaFaseRitaglio(dataUrl) {
   document.getElementById('scannerDomanda').style.display = 'none';
   document.getElementById('scannerCrop').style.display = 'block';
 
+  // Ogni scatto ha il suo numero: serve a non far scrivere i risultati di
+  // un rilevamento partito in ritardo sopra una foto nel frattempo rifatta.
+  scanState.scattoId = (scanState.scattoId || 0) + 1;
+  scanState.utenteHaSpostato = false;
+  var mioScatto = scanState.scattoId;
+  var avviso = document.getElementById('cropStatus');
+
+  function provaRilevamento() {
+    // Se l'operaio ha gia' sistemato un angolo a mano, non glielo si tocca.
+    if (scanState.scattoId !== mioScatto || scanState.utenteHaSpostato) return true;
+    var auto = rilevaAngoliAutomatico(cropImg);
+    if (auto) {
+      scanState.cropPts = auto;
+      renderCropOverlay();
+      if (avviso) avviso.textContent = '';
+      return true;
+    }
+    return false;
+  }
+
   function inizializzaAngoli() {
     // Angoli di partenza: quasi ai bordi dell'inquadratura (TL, TR, BR, BL).
     // Prima erano rientrati del 6%: se il rilevamento automatico falliva e
@@ -137,11 +157,37 @@ function avviaFaseRitaglio(dataUrl) {
       { x: 0.98, y: 0.98 },
       { x: 0.02, y: 0.98 }
     ];
-    // Se OpenCV.js e' pronta proviamo il rilevamento automatico del foglio
-    // (i 4 angoli restano comunque trascinabili a mano dopo, per correggere).
-    var auto = rilevaAngoliAutomatico(cropImg);
-    if (auto) scanState.cropPts = auto;
     renderCropOverlay();
+
+    if (provaRilevamento()) return;
+
+    // Qui il rilevamento non ha funzionato. Il caso piu' frequente e' che
+    // OpenCV.js (circa 9 MB) non sia ancora arrivata: sotto rete mobile ci
+    // mette qualche secondo, e prima di questa modifica restavano per
+    // sempre i 4 angoli di default, come se il rilevamento non esistesse.
+    // Quindi si riprova finche' la libreria non e' pronta.
+    if (!window.cvPronto) {
+      if (avviso) avviso.textContent = 'Ricerca automatica dei bordi in corso...';
+      var tentativi = 0;
+      var attesa = setInterval(function () {
+        tentativi++;
+        if (scanState.scattoId !== mioScatto || scanState.utenteHaSpostato) {
+          clearInterval(attesa);
+          return;
+        }
+        if (window.cvPronto) {
+          clearInterval(attesa);
+          if (!provaRilevamento() && avviso) {
+            avviso.textContent = 'Bordi non riconosciuti: sistema i 4 angoli a mano.';
+          }
+        } else if (tentativi > 60) {     // ~18 secondi
+          clearInterval(attesa);
+          if (avviso) avviso.textContent = 'Bordi non riconosciuti: sistema i 4 angoli a mano.';
+        }
+      }, 300);
+    } else if (avviso) {
+      avviso.textContent = 'Bordi non riconosciuti: sistema i 4 angoli a mano.';
+    }
   }
 
   cropImg.onload = inizializzaAngoli;
@@ -189,7 +235,22 @@ function punteggioQuadrilatero(pts, w, h) {
   ) / 2;
   var frazioneArea = area / (w * h);
   if (frazioneArea < 0.12) return -1;            // troppo piccolo: non e' il foglio
+  if (frazioneArea > 0.95) return -1;            // e' tutta l'inquadratura, non un foglio
   var pArea = Math.min(1, frazioneArea / 0.75);
+
+  // Il bordo stesso della foto e' un rettangolo perfetto: angoli a 90 gradi,
+  // lati identici, area massima. Senza questo controllo prendeva il
+  // punteggio pieno e vinceva sul foglio vero. Si contano quindi gli angoli
+  // "appiccicati" al bordo dell'inquadratura: un foglio fotografato ne ha
+  // zero o al massimo uno (se sborda), il bordo della foto tutti e quattro.
+  var margine = 0.012;
+  var suBordo = 0;
+  for (var k = 0; k < 4; k++) {
+    if (pts[k].x <= w * margine || pts[k].x >= w * (1 - margine) ||
+        pts[k].y <= h * margine || pts[k].y >= h * (1 - margine)) suBordo++;
+  }
+  if (suBordo >= 4) return -1;
+  var pBordo = 1 - suBordo * 0.25;
 
   // 2) Angoli vicini a 90 gradi: un foglio fotografato resta un
   // quadrilatero con angoli quasi retti, il rumore no.
@@ -211,7 +272,7 @@ function punteggioQuadrilatero(pts, w, h) {
   var pLati = (Math.min(sopra, sotto) / Math.max(sopra, sotto) +
                Math.min(sin, des) / Math.max(sin, des)) / 2;
 
-  return 0.45 * pArea + 0.35 * pAngoli + 0.20 * pLati;
+  return (0.45 * pArea + 0.35 * pAngoli + 0.20 * pLati) * pBordo;
 }
 
 // Estrae tutti i quadrilateri plausibili da una mappa di bordi binaria.
@@ -257,9 +318,69 @@ function candidatiDaMappaBordi(bordi, w, h, fuori) {
   finally { contours.delete(); hierarchy.delete(); }
 }
 
+// Mappa "carta": invece di cercare i bordi, separa il foglio dallo sfondo
+// per COLORE. La carta e' poco satura e chiara; un tavolo di legno, un
+// cartoncino o una scrivania sono piu' saturi e/o piu' scuri. Su un foglio
+// beige appoggiato su legno chiaro - dove il contrasto di luminosita' e'
+// quasi nullo e le venature del legno sembrano bordi - questa e' l'unica
+// strategia che trova il foglio.
+// Restituisce la maschera binaria di partenza (bianco = probabile carta),
+// da cui poi si ricavano le maschere con aperture diverse.
+function punteggioCarta(piccola) {
+  var rgb = null, hsv = null, lab = null, invS = null, sc = null, base = null;
+  var canaliHsv = new cv.MatVector(), canaliLab = new cv.MatVector();
+  try {
+    rgb = new cv.Mat();
+    cv.cvtColor(piccola, rgb, cv.COLOR_RGBA2RGB);
+    hsv = new cv.Mat();
+    cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+    lab = new cv.Mat();
+    cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
+    cv.split(hsv, canaliHsv);
+    cv.split(lab, canaliLab);
+
+    // poco saturo (255 - S) + chiaro (L), mezzo e mezzo
+    invS = new cv.Mat();
+    cv.bitwise_not(canaliHsv.get(1), invS);
+    sc = new cv.Mat();
+    cv.addWeighted(invS, 0.5, canaliLab.get(0), 0.5, 0, sc);
+    cv.GaussianBlur(sc, sc, new cv.Size(0, 0), 3);
+
+    // Otsu trova da solo la separazione fra carta e sfondo
+    base = new cv.Mat();
+    cv.threshold(sc, base, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+    return base;
+  } catch (e) {
+    if (base) { base.delete(); }
+    return null;
+  } finally {
+    if (rgb) rgb.delete();
+    if (hsv) hsv.delete();
+    if (lab) lab.delete();
+    if (invS) invS.delete();
+    if (sc) sc.delete();
+    for (var i = 0; i < canaliHsv.size(); i++) canaliHsv.get(i).delete();
+    for (var j = 0; j < canaliLab.size(); j++) canaliLab.get(j).delete();
+    canaliHsv.delete();
+    canaliLab.delete();
+  }
+}
+
+// Apertura morfologica sulla maschera carta. La dimensione conta molto:
+// serve a staccare il foglio da altre superfici chiare che lo toccano
+// (il bordo del tavolo, un ripiano grigio). Troppo piccola non stacca
+// niente, troppo grande rimangia il foglio: per questo se ne provano
+// diverse e poi decide il punteggio.
+function mascheraCarta(base, apertura, out) {
+  var k = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(apertura, apertura));
+  try {
+    cv.morphologyEx(base, out, cv.MORPH_OPEN, k);
+  } finally { k.delete(); }
+}
+
 function rilevaAngoliAutomatico(img) {
   if (!window.cvPronto || typeof cv === 'undefined') return null;
-  var src = null, piccola = null, gray = null, blur = null;
+  var src = null, piccola = null, gray = null, blur = null, carta = null;
   try {
     src = cv.imread(img);
     if (!src.cols || !src.rows) return null;
@@ -283,10 +404,15 @@ function rilevaAngoliAutomatico(img) {
     var candidati = [];
     var kChiudi = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
 
-    // --- Strategia 1: Canny con soglie dalla mediana della foto ---
-    // --- Strategia 2: soglie basse, per fogli bianchi su sfondo chiaro ---
-    // --- Strategia 3: gradiente morfologico + Otsu, per bordi sfumati ---
-    var strategie = [
+    // Due famiglie di strategie, i cui candidati finiscono nello stesso
+    // calderone e vengono poi scelti dal punteggio:
+    //  A) BORDI   - Canny con soglie dalla mediana, Canny a soglie basse,
+    //               gradiente morfologico + Otsu. Vanno bene quando il
+    //               foglio stacca dallo sfondo.
+    //  B) COLORE  - segmentazione "carta" (poco satura e chiara) con tre
+    //               aperture diverse. E' quella che salva i casi come il
+    //               foglio beige sul tavolo di legno chiaro.
+    var strategieBordi = [
       function (out) {
         cv.Canny(blur, out, Math.max(0, Math.round(med * 0.66)), Math.min(255, Math.round(med * 1.33)));
       },
@@ -300,10 +426,10 @@ function rilevaAngoliAutomatico(img) {
       }
     ];
 
-    for (var s = 0; s < strategie.length; s++) {
+    for (var s = 0; s < strategieBordi.length; s++) {
       var bordi = new cv.Mat();
       try {
-        strategie[s](bordi);
+        strategieBordi[s](bordi);
         // Chiude i buchi nel bordo del foglio, altrimenti il contorno
         // si spezza e non viene piu' riconosciuto come quadrilatero.
         cv.morphologyEx(bordi, bordi, cv.MORPH_CLOSE, kChiudi);
@@ -313,6 +439,21 @@ function rilevaAngoliAutomatico(img) {
       finally { bordi.delete(); }
     }
     kChiudi.delete();
+
+    // B) segmentazione per colore. Qui NON si chiude ne' si dilata: servirebbe
+    // solo a riattaccare il foglio a quello che gli sta intorno.
+    carta = punteggioCarta(piccola);
+    if (carta) {
+      var aperture = [9, 15, 21];
+      for (var a = 0; a < aperture.length; a++) {
+        var mc = new cv.Mat();
+        try {
+          mascheraCarta(carta, aperture[a], mc);
+          candidatiDaMappaBordi(mc, w, h, candidati);
+        } catch (e) { /* strategia saltata */ }
+        finally { mc.delete(); }
+      }
+    }
 
     if (!candidati.length) return null;
     candidati.sort(function (a, b) { return b.punteggio - a.punteggio; });
@@ -330,6 +471,7 @@ function rilevaAngoliAutomatico(img) {
     if (piccola) piccola.delete();
     if (gray) gray.delete();
     if (blur) blur.delete();
+    if (carta) carta.delete();
   }
 }
 
@@ -397,6 +539,8 @@ function renderCropOverlay() {
   stage.addEventListener('pointerdown', function (e) {
     if (!e.target.classList.contains('crop-handle')) return;
     scanState.cropDragIdx = parseInt(e.target.getAttribute('data-i'), 10);
+    // da qui in poi il rilevamento automatico non sovrascrive piu' gli angoli
+    scanState.utenteHaSpostato = true;
     e.target.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
@@ -418,6 +562,7 @@ function renderCropOverlay() {
 
 document.getElementById('btnCropAnnulla').addEventListener('click', function () {
   document.getElementById('scannerCrop').style.display = 'none';
+  document.getElementById('cropStatus').textContent = '';
   scanState.img = null;
   // Se ci sono gia' pagine confermate si torna alla loro anteprima,
   // altrimenti alla schermata iniziale.
