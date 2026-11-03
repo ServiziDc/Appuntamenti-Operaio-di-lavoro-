@@ -41,7 +41,7 @@ function azzeraScanner() {
       document.getElementById('viewSettimana').style.display = (v === 'settimana') ? '' : 'none';
       document.getElementById('viewScanner').style.display = (v === 'scanner') ? '' : 'none';
       if (v === 'scanner') avviaElencoMieiTicket();
-      else if (camState.stream) { chiudiFotocamera(); document.getElementById('scannerVuoto').style.display = ''; }
+      else if (camState.stream) { chiudiFotocamera(); tornaDallaFotocamera(); }
     });
   }
 })();
@@ -58,9 +58,12 @@ function elaboraFotoOImmagine(dataUrl) {
   img.src = dataUrl;
 }
 
-// Riapre la fotocamera per aggiungere un'altra pagina allo stesso ticket
+// Riapre la fotocamera per aggiungere un'altra pagina allo stesso ticket.
+// Si usa sempre l'anteprima dal vivo dell'app (quella con il riquadro
+// verde), non la fotocamera di sistema: cosi' tutte le pagine di un ticket
+// vengono inquadrate e ritagliate allo stesso modo.
 function riapriFotocamera() {
-  document.getElementById('ticketCameraInput').click();
+  apriFotocamera();
 }
 
 document.getElementById('ticketCameraInput').addEventListener('change', function () {
@@ -147,7 +150,8 @@ function camSupportata() {
 function apriFotocamera() {
   var avviso = document.getElementById('scannerVuotoStato');
   if (!camSupportata()) {
-    avviso.textContent = 'Questo telefono non permette l\'anteprima dal vivo: usa "Scatta con la fotocamera del telefono".';
+    avviso.textContent = 'Questo telefono non permette l\'anteprima dal vivo: usa il pulsante qui sotto.';
+    mostraRipiegoNativa();
     return;
   }
   avviso.textContent = 'Apertura fotocamera...';
@@ -192,7 +196,31 @@ function apriFotocamera() {
       msg += ' (' + err.message + ')';
     }
     avviso.textContent = msg;
+    mostraRipiegoNativa();
+    // se la fotocamera non parte non si lascia l'operaio su una pagina vuota
+    document.getElementById('scannerCam').style.display = 'none';
+    tornaDallaFotocamera();
   });
+}
+
+// Dove si torna quando si esce dalla fotocamera: se ci sono gia' pagine
+// scattate si torna alla loro anteprima, altrimenti alla schermata iniziale.
+// Senza questo, chiudendo la fotocamera mentre si aggiunge una pagina si
+// finiva sulla schermata vuota, con le pagine gia' fatte non piu' in vista.
+function tornaDallaFotocamera() {
+  if (scanState.pagine.length > 0) {
+    mostraAnteprimaPagine();
+  } else if (scanState.pdfDiretto) {
+    mostraAnteprimaPdfDiretto();
+  } else {
+    document.getElementById('scannerVuoto').style.display = '';
+  }
+}
+
+// Il pulsante di ripiego resta nascosto finche' serve davvero.
+function mostraRipiegoNativa() {
+  var r = document.getElementById('ripiegoNativa');
+  if (r) r.style.display = '';
 }
 
 function chiudiFotocamera() {
@@ -345,7 +373,7 @@ function scattaDallaFotocamera() {
 document.getElementById('btnApriFotocamera').addEventListener('click', apriFotocamera);
 document.getElementById('btnCamChiudi').addEventListener('click', function () {
   chiudiFotocamera();
-  document.getElementById('scannerVuoto').style.display = '';
+  tornaDallaFotocamera();
 });
 document.getElementById('btnCamScatta').addEventListener('click', scattaDallaFotocamera);
 
@@ -354,7 +382,7 @@ document.getElementById('btnCamScatta').addEventListener('click', scattaDallaFot
 document.addEventListener('visibilitychange', function () {
   if (document.hidden && camState.stream) {
     chiudiFotocamera();
-    document.getElementById('scannerVuoto').style.display = '';
+    tornaDallaFotocamera();
   }
 });
 

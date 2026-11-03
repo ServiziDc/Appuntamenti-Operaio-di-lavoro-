@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Il mio giorno">
-<link rel="stylesheet" href="css/style.css?v=46">
+<link rel="stylesheet" href="css/style.css?v=47">
 </head>
 <body>
 
@@ -60,7 +60,10 @@
       <div id="scannerVuoto" class="scanner-vuoto">
         <p>📷 Inquadra il ticket compilato: l'app riconosce il foglio da sola e ci disegna sopra un riquadro verde. Dopo ogni foto ti viene chiesto se aggiungerne un'altra, così un ticket di più fogli diventa un unico PDF.</p>
         <button type="button" id="btnApriFotocamera" class="btn btn-primary btn-block">📷 Fotocamera</button>
-        <label for="ticketCameraInput" class="btn btn-secondary btn-block" style="margin-top:8px;">🖼️ Scatta con la fotocamera del telefono</label>
+        <!-- Ripiego: compare SOLO se l'anteprima dal vivo non parte
+             (permesso negato, browser che non la supporta). Altrimenti si
+             usa sempre la fotocamera dell'app, con il riquadro verde. -->
+        <label for="ticketCameraInput" id="ripiegoNativa" class="btn btn-secondary btn-block" style="margin-top:8px; display:none;">🖼️ Scatta con la fotocamera del telefono</label>
         <input type="file" id="ticketCameraInput" accept="image/*" capture="environment" style="display:none;">
         <label for="ticketFileInput" class="btn btn-secondary btn-block" style="margin-top:8px;">📁 Carica file (PDF/JPG/PNG)</label>
         <input type="file" id="ticketFileInput" accept="image/*,application/pdf" style="display:none;">
@@ -151,9 +154,9 @@
      metodo semplice come riserva. -->
 <script>window.cvPronto = false;</script>
 <script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="if (window.cv) { cv['onRuntimeInitialized'] = function () { window.cvPronto = true; }; }"></script>
-<script src="js/firebase-config.js?v=46"></script>
-<script src="js/planning-core.js?v=46"></script>
-<script src="js/operaio.js?v=46"></script>
-<script src="js/scanner.js?v=46"></script>
+<script src="js/firebase-config.js?v=47"></script>
+<script src="js/planning-core.js?v=47"></script>
+<script src="js/operaio.js?v=47"></script>
+<script src="js/scanner.js?v=47"></script>
 </body>
 </html>
